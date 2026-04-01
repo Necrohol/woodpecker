@@ -109,3 +109,56 @@ src_install() {{
 if __name__ == "__main__":
     setup_accounts()
     update_ebuilds()
+
+# ... (rest of your update.py logic above) ...
+
+        content = f'''EAPI=8
+inherit systemd
+
+DESCRIPTION="Woodpecker CI {pkg} (binary)"
+HOMEPAGE="https://woodpecker-ci.org"
+SRC_URI="
+	{src_uri}
+"
+S="${{WORKDIR}}"
+
+LICENSE="Apache-2.0"
+SLOT="0"
+KEYWORDS="~amd64 ~arm ~arm64 ~riscv"
+RESTRICT="strip"
+
+RDEPEND="
+	acct-group/woodpecker
+	acct-user/woodpecker
+"
+
+src_install() {{
+	dobin woodpecker-{pkg}
+	
+	systemd_dounit "${{FILESDIR}}/woodpecker-{pkg}.service"
+	
+	insinto /etc/woodpecker
+	newins "${{FILESDIR}}/woodpecker-{pkg}.conf" woodpecker-{pkg}.conf
+}}
+
+pkg_postinst() {{
+	elog "Woodpecker CI {pkg} has been installed."
+	elog ""
+	elog "1. Configuration:"
+	elog "   Edit /etc/woodpecker/woodpecker-{pkg}.conf to set your environment variables."
+	elog ""
+	elog "2. Security:"
+	elog "   If this is a fresh install, generate a shared secret for server-agent comms:"
+	elog "   'openssl rand -hex 32'"
+	elog ""
+	elog "3. Service:"
+	elog "   To start Woodpecker via systemd:"
+	elog "   'systemctl enable --now woodpecker-{pkg}'"
+    
+	if [[ "{pkg}" == "server" ]]; then
+		ewarn "Ensure your reverse proxy (Nginx/Lighttpd) is configured for WebSockets/SSE."
+	fi
+}}
+'''
+# ... (rest of the script) ...
+
