@@ -6,38 +6,57 @@ MAX_VERSIONS = 4
 PKGS = ["server", "agent", "cli"]
 ARCH_MAP = {"amd64": "amd64", "arm": "arm", "arm64": "arm64", "riscv": "riscv64"}
 
-def setup_accounts():
-    """Run once: Creates acct-group and acct-user if missing."""
-    for cat in ["acct-group", "acct-user"]:
-        path = os.path.join(REPO_ROOT, cat, "woodpecker")
-        if not os.path.exists(path):
-            os.makedirs(path, exist_ok=True)
-            ebuild_type = cat.replace("-", "_")
-            # Group ID 404, User ID 404
-            content = f"EAPI=8\ninherit {ebuild_type}\n"
-            content += "ACCT_USER_ID=404\nACCT_USER_GROUPS=( woodpecker )\n" if "user" in cat else "ACCT_GROUP_ID=404\n"
-            with open(os.path.join(path, "woodpecker-0.ebuild"), "w") as f:
-                f.write(content)
+def write_file(path, name, content):
+    os.makedirs(path, exist_ok=True)
+    with open(os.path.join(path, name), "w") as f:
+        f.write(content)
 
-def update_binaries():
+def setup_files(suffix):
+    """Generates OpenRC and Webserver config files."""
+    pkg_path = os.path.join(REPO_ROOT, "dev-util", f"woodpecker-{suffix}", "files")
+    
+    # OpenRC Init Script
+    init_script = f'''#!/sbin/openrc-run
+description="Woodpecker CI {suffix}"
+command="/usr/bin/woodpecker-{suffix}"
+command_background="yes"
+pidfile="/run/woodpecker-{suffix}.pid"
+command_user="woodpecker:woodpecker"
+output_log="/var/log/woodpecker-{suffix}.log"
+error_log="/var/log/woodpecker-{suffix}.log"
+'''
+    write_file(pkg_path, f"woodpecker-{suffix}.initd", init_script)
+
+    if suffix == "server":
+        # Nginx Template
+        nginx_conf = '''server {
+    listen 80; server_name ci.example.com;
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_http_version 1.1;
+        proxy_set_header Connection '';
+    }
+}'''
+        write_file(pkg_path, "nginx.conf", nginx_conf)
+
+def update_ebuilds():
     releases = requests.get(API_URL).json()
-    # Gentoo: v3.0-rc1 -> 3.0_rc1
     versions = [(r['tag_name'].lstrip('v'), r['tag_name'].lstrip('v').replace('-', '_')) for r in releases][:MAX_VERSIONS]
 
     for suffix in PKGS:
+        setup_files(suffix) # Create the files/ directory content
         pkg_path = os.path.join(REPO_ROOT, "dev-util", f"woodpecker-{suffix}")
-        os.makedirs(pkg_path, exist_ok=True)
         
         kept = []
         for raw_v, gentoo_v in versions:
             ebuild_name = f"woodpecker-{suffix}-{gentoo_v}.ebuild"
             kept.append(ebuild_name)
             
-            src_uri = "\n\t".join([f'{arch}? ( https://github.com{raw_v}/woodpecker-{suffix}_linux_{wp_arch}.tar.gz )' 
+            src_uri = "\\n\\t".join([f'{arch}? ( https://github.com{raw_v}/woodpecker-{suffix}_linux_{wp_arch}.tar.gz )' 
                                    for arch, wp_arch in ARCH_MAP.items()])
 
-            with open(os.path.join(pkg_path, ebuild_name), "w") as f:
-                f.write(f'''EAPI=8
+            ebuild_content = f'''EAPI=8
 DESCRIPTION="Woodpecker CI {suffix} (binary)"
 HOMEPAGE="https://woodpecker-ci.org"
 SRC_URI="
@@ -56,13 +75,15 @@ RDEPEND="
 
 src_install() {{
 	dobin woodpecker-{suffix}
+	newinitd "${{FILESDIR}}/woodpecker-{suffix}.initd" woodpecker-{suffix}
+	
+	if [[ "{suffix}" == "server" ]]; then
+		insinto /etc/nginx/modules.d
+		doins "${{FILESDIR}}/nginx.conf"
+	fi
 }}
-''')
-        # Prune old versions
-        for f in os.listdir(pkg_path):
-            if f.endswith(".ebuild") and f not in kept:
-                os.remove(os.path.join(pkg_path, f))
+'''
+            write_file(pkg_path, ebuild_name, ebuild_content)
 
 if __name__ == "__main__":
-    setup_accounts()
-    update_binaries()
+    update_ebuilds()
