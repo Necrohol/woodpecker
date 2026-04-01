@@ -6,19 +6,38 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: gentoo/stage3:amd64
+    container: 
+      image: gentoo/stage3:amd64
+      options: --user root # Ensure we can emerge tools
     steps:
       - uses: actions/checkout@v4
+      
       - name: Setup Tools
         run: |
+          # Use binary packages where possible to save Action minutes
           emerge --sync --quiet
-          emerge dev-util/pkgdev dev-vcs/git net-misc/curl
-      - name: Run Update
-        run: python3 scripts/update.py
+          getbinpkg=y emerge -uDN --quiet \
+            dev-util/pkgdev \
+            dev-vcs/git \
+            net-misc/curl \
+            dev-python/requests
+            
+      - name: Run Update Script
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/update_overlay.py # Ensure filename matches
+        
       - name: Manifest & Commit
         run: |
           git config --global user.name "woodpecker-bot"
           git config --global user.email "bot@example.com"
+          git config --global --add safe.directory /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}
+          
+          # Generate manifests for all new ebuilds
           pkgdev manifest
-          pkgdev commit -a -m "woodpecker: automated version bump" || echo "No changes"
+          
+          # Commit using pkgdev (it handles the ChangeLog style)
+          # Use --signoff if your repo requires it
+          pkgdev commit -a -m "woodpecker: automated version bump" || echo "No changes to commit"
+          
           git push
