@@ -1,68 +1,85 @@
 import os, requests
 
+# Constants
 REPO_ROOT = os.getcwd()
+# Correct API endpoint for Woodpecker releases
 API_URL = "https://github.com"
 MAX_VERSIONS = 4
-PKGS = ["server", "agent", "cli"]
 ARCH_MAP = {"amd64": "amd64", "arm": "arm", "arm64": "arm64", "riscv": "riscv64"}
+PKGS = ["server", "agent", "cli"]
 
-def write_file(path, name, content):
-    os.makedirs(path, exist_ok=True)
-    with open(os.path.join(path, name), "w") as f:
-        f.write(content)
+def setup_accounts():
+    """Create acct-group/user once."""
+    for cat in ["acct-group", "acct-user"]:
+        path = os.path.join(REPO_ROOT, cat, "woodpecker")
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
+            e_type = cat.replace("-", "_")
+            content = f"EAPI=8\ninherit {e_type}\nACCT_{e_type.upper()}_ID=404\n"
+            if "user" in cat: content += "ACCT_USER_GROUPS=( woodpecker )\n"
+            with open(os.path.join(path, "woodpecker-0.ebuild"), "w") as f: f.write(content)
 
-def setup_files(suffix):
-    """Generates OpenRC and Webserver config files."""
-    pkg_path = os.path.join(REPO_ROOT, "dev-util", f"woodpecker-{suffix}", "files")
+def setup_files(pkg):
+    """Generates the systemd and env files used by src_install."""
+    files_dir = os.path.join(REPO_ROOT, "dev-util", f"woodpecker-{pkg}", "files")
+    os.makedirs(files_dir, exist_ok=True)
     
-    # OpenRC Init Script
-    init_script = f'''#!/sbin/openrc-run
-description="Woodpecker CI {suffix}"
-command="/usr/bin/woodpecker-{suffix}"
-command_background="yes"
-pidfile="/run/woodpecker-{suffix}.pid"
-command_user="woodpecker:woodpecker"
-output_log="/var/log/woodpecker-{suffix}.log"
-error_log="/var/log/woodpecker-{suffix}.log"
-'''
-    write_file(pkg_path, f"woodpecker-{suffix}.initd", init_script)
+    # Systemd Unit
+    unit = f'''[Unit]
+Description=Woodpecker CI {pkg.capitalize()}
+After=network.target
 
-    if suffix == "server":
-        # Nginx Template
-        nginx_conf = '''server {
-    listen 80; server_name ci.example.com;
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_http_version 1.1;
-        proxy_set_header Connection '';
-    }
-}'''
-        write_file(pkg_path, "nginx.conf", nginx_conf)
+[Service]
+Type=simple
+User=woodpecker
+Group=woodpecker
+EnvironmentFile=-/etc/woodpecker/woodpecker-{pkg}.conf
+ExecStart=/usr/bin/woodpecker-{pkg}
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+'''
+    # Env File
+    env = f'''# Woodpecker {pkg.capitalize()} Config
+# See upstream docs for variables
+WOODPECKER_AGENT_SECRET=$(openssl rand -hex 32)
+'''
+    with open(os.path.join(files_dir, f"woodpecker-{pkg}.service"), "w") as f: f.write(unit)
+    with open(os.path.join(files_dir, f"woodpecker-{pkg}.conf"), "w") as f: f.write(env)
 
 def update_ebuilds():
-    releases = requests.get(API_URL).json()
+    r = requests.get(API_URL)
+    if r.status_code != 200: return
+    releases = r.json()
+    # (Raw Tag, Gentoo Version)
     versions = [(r['tag_name'].lstrip('v'), r['tag_name'].lstrip('v').replace('-', '_')) for r in releases][:MAX_VERSIONS]
 
-    for suffix in PKGS:
-        setup_files(suffix) # Create the files/ directory content
-        pkg_path = os.path.join(REPO_ROOT, "dev-util", f"woodpecker-{suffix}")
+    for pkg in PKGS:
+        setup_files(pkg)
+        pkg_path = os.path.join(REPO_ROOT, "dev-util", f"woodpecker-{pkg}")
+        os.makedirs(pkg_path, exist_ok=True)
         
         kept = []
         for raw_v, gentoo_v in versions:
-            ebuild_name = f"woodpecker-{suffix}-{gentoo_v}.ebuild"
+            ebuild_name = f"woodpecker-{pkg}-{gentoo_v}.ebuild"
             kept.append(ebuild_name)
             
-            src_uri = "\\n\\t".join([f'{arch}? ( https://github.com{raw_v}/woodpecker-{suffix}_linux_{wp_arch}.tar.gz )' 
-                                   for arch, wp_arch in ARCH_MAP.items()])
+            # Construct SRC_URI with ARCH_MAP
+            src_uri_lines = [f'{arch}? ( https://github.com{raw_v}/woodpecker-{pkg}_linux_{wp_arch}.tar.gz )' 
+                             for arch, wp_arch in ARCH_MAP.items()]
+            src_uri = "\n\t".join(src_uri_lines)
 
-            ebuild_content = f'''EAPI=8
-DESCRIPTION="Woodpecker CI {suffix} (binary)"
+            content = f'''EAPI=8
+inherit systemd
+
+DESCRIPTION="Woodpecker CI {pkg} (binary)"
 HOMEPAGE="https://woodpecker-ci.org"
 SRC_URI="
 	{src_uri}
 "
 S="${{WORKDIR}}"
+
 LICENSE="Apache-2.0"
 SLOT="0"
 KEYWORDS="~amd64 ~arm ~arm64 ~riscv"
@@ -74,66 +91,21 @@ RDEPEND="
 "
 
 src_install() {{
-	dobin woodpecker-{suffix}
-	newinitd "${{FILESDIR}}/woodpecker-{suffix}.initd" woodpecker-{suffix}
+	dobin woodpecker-{pkg}
 	
-	if [[ "{suffix}" == "server" ]]; then
-		insinto /etc/nginx/modules.d
-		doins "${{FILESDIR}}/nginx.conf"
-	fi
+	systemd_dounit "${{FILESDIR}}/woodpecker-{pkg}.service"
+	
+	insinto /etc/woodpecker
+	newins "${{FILESDIR}}/woodpecker-{pkg}.conf" woodpecker-{pkg}.conf
 }}
 '''
-            write_file(pkg_path, ebuild_name, ebuild_content)
+            with open(os.path.join(pkg_path, ebuild_name), "w") as f: f.write(content)
+
+        # Prune old ebuilds
+        for f in os.listdir(pkg_path):
+            if f.endswith(".ebuild") and f not in kept:
+                os.remove(os.path.join(pkg_path, f))
 
 if __name__ == "__main__":
+    setup_accounts()
     update_ebuilds()
-import os, requests, subprocess, tarfile
-
-REPO_ROOT = os.getcwd()
-VERSION = "3.13.0"  # Set your target version
-PKGS = ["server", "agent"]
-
-def extract_upstream_configs(pkg, ver):
-    """Downloads .deb and extracts systemd/env files to overlay."""
-    pkg_name = f"woodpecker-{pkg}"
-    files_dir = os.path.join(REPO_ROOT, "dev-util", pkg_name, "files")
-    os.makedirs(files_dir, exist_ok=True)
-    
-    deb_url = f"https://github.com{ver}/{pkg_name}_linux_amd64.deb"
-    deb_path = f"{pkg_name}.deb"
-    
-    # 1. Download
-    r = requests.get(deb_url)
-    with open(deb_path, "wb") as f: f.write(r.content)
-    
-    # 2. Extract data.tar.xz from .deb (ar is standard on Gentoo via binutils)
-    subprocess.run(["ar", "x", deb_path], check=True)
-    
-    # 3. Extract specific files from data.tar.xz
-    with tarfile.open("data.tar.xz") as tar:
-        for member in tar.getmembers():
-            # Rob systemd units and environment examples
-            if ".service" in member.name or ".env" in member.name:
-                member.name = os.path.basename(member.name) # Flatten path
-                tar.extract(member, path=files_dir)
-                print(f"Robbed: {member.name} -> {files_dir}")
-
-    # Cleanup temp extraction files
-    for f in [deb_path, "control.tar.gz", "data.tar.xz", "debian-binary"]:
-        if os.path.exists(f): os.remove(f)
-
-if __name__ == "__main__":
-    for p in PKGS:
-        extract_upstream_configs(p, VERSION)
-
-#src_install() {
-    # Install the binary from the tar.gz
- #   dobin woodpecker-${PN#woodpecker-}
-
-    # Install the robbed systemd unit
- #   systemd_dounit "${FILESDIR}/woodpecker-${PN#woodpecker-}.service"
-#
-    # Install the robbed environment example
- #   insinto /etc/woodpecker
-  #  newins "${FILESDIR}/woodpecker-${PN#woodpecker-}.env.example" woodpecker-${PN#woodpecker-}.env
-#}
