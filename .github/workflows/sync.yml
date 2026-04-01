@@ -6,31 +6,44 @@ on:
 jobs:
   update-overlay:
     runs-on: ubuntu-latest
-    container: gentoo/stage3:amd64
+    container: 
+      image: gentoo/stage3:amd64
+      options: --user root
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Setup Portage
+        with:
+          fetch-depth: 0 # pkgcheck often needs history for context
+
+      - name: Setup Portage & Tools
         run: |
-          emerge --sync --quiet
-          emerge dev-util/pkgdev app-portage/gentoolkit dev-vcs/git
-          
+          # Use binary packages where possible to save GitHub Action minutes
+          getbinpkg=y emerge --sync --quiet
+          getbinpkg=y emerge -uDN --quiet \
+            dev-util/pkgdev \
+            app-portage/gentoolkit \
+            dev-vcs/git \
+            dev-python/requests
+
+      - name: Fix Git Permissions
+        run: git config --global --add safe.directory /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}
+
       - name: Run Generator
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/update_overlay.py
 
-      - name: Manifest
+      - name: Generate Manifests
         run: pkgdev manifest
 
       - name: Scan & Check
         uses: pkgcore/pkgcheck-action@v1
         with:
-          args: --net
+          args: --net # Checks for broken SRC_URI links
 
       - name: Commit & Push
-        env:
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          pkgdev commit -a -m "woodpecker: automated version bump" || echo "No changes"
+          # pkgdev commit handles the standard Gentoo commit format automatically
+          pkgdev commit -a -m "woodpecker: automated version bump" || echo "No changes to commit"
           git push
