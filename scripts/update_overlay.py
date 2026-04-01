@@ -125,3 +125,15 @@ def extract_upstream_configs(pkg, ver):
 if __name__ == "__main__":
     for p in PKGS:
         extract_upstream_configs(p, VERSION)
+
+#src_install() {
+    # Install the binary from the tar.gz
+ #   dobin woodpecker-${PN#woodpecker-}
+
+    # Install the robbed systemd unit
+ #   systemd_dounit "${FILESDIR}/woodpecker-${PN#woodpecker-}.service"
+#
+    # Install the robbed environment example
+ #   insinto /etc/woodpecker
+  #  newins "${FILESDIR}/woodpecker-${PN#woodpecker-}.env.example" woodpecker-${PN#woodpecker-}.env
+#}
