@@ -1,0 +1,24 @@
+name: Woodpecker Overlay Sync
+on:
+  schedule: [{cron: "0 0 * * *"}]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: gentoo/stage3:amd64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Tools
+        run: |
+          emerge --sync --quiet
+          emerge dev-util/pkgdev dev-vcs/git net-misc/curl
+      - name: Run Update
+        run: python3 scripts/update.py
+      - name: Manifest & Commit
+        run: |
+          git config --global user.name "woodpecker-bot"
+          git config --global user.email "bot@example.com"
+          pkgdev manifest
+          pkgdev commit -a -m "woodpecker: automated version bump" || echo "No changes"
+          git push
