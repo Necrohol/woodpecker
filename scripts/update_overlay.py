@@ -128,8 +128,12 @@ KEYWORDS="~amd64 ~arm ~arm64 ~riscv"
 RESTRICT="strip"
 
 RDEPEND="
-	acct-group/woodpecker
-	acct-user/woodpecker
+    acct-group/woodpecker
+    acct-user/woodpecker
+    dev-db/sqlite:3
+    app-containers/podman[rootless,seccomp,wrapper]
+    app-containers/podman-compose[wrapper]
+    app-misc/ca-certificates
 "
 
 src_install() {{
