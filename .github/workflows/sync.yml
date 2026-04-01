@@ -12,11 +12,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # pkgcheck often needs history for context
+          fetch-depth: 0 
 
       - name: Setup Portage & Tools
         run: |
-          # Use binary packages where possible to save GitHub Action minutes
           getbinpkg=y emerge --sync --quiet
           getbinpkg=y emerge -uDN --quiet \
             dev-util/pkgdev \
@@ -27,6 +26,16 @@ jobs:
       - name: Fix Git Permissions
         run: git config --global --add safe.directory /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}
 
+      - name: Bootstrap Overlay for Testing
+        run: |
+          mkdir -p /etc/portage/repos.conf
+          # Bootstrap using your specific raw URL template
+          curl -s https://githubusercontent.com \
+            -o /etc/portage/repos.conf/woodpecker.conf
+          # Point the location to the current workspace for testing local changes
+          sed -i "location = /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}" /etc/portage/repos.conf/woodpecker.conf
+          emaint sync -r woodpecker
+
       - name: Run Generator
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -34,6 +43,18 @@ jobs:
 
       - name: Generate Manifests
         run: pkgdev manifest
+
+      - name: Scan & Check
+        uses: pkgcore/pkgcheck-action@v1
+        with:
+          args: --net
+
+      - name: Commit & Push
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          pkgdev commit -a -m "woodpecker: automated version bump" || echo "No changes"
+          git push
 
       - name: Scan & Check
         uses: pkgcore/pkgcheck-action@v1
