@@ -87,3 +87,41 @@ src_install() {{
 
 if __name__ == "__main__":
     update_ebuilds()
+import os, requests, subprocess, tarfile
+
+REPO_ROOT = os.getcwd()
+VERSION = "3.13.0"  # Set your target version
+PKGS = ["server", "agent"]
+
+def extract_upstream_configs(pkg, ver):
+    """Downloads .deb and extracts systemd/env files to overlay."""
+    pkg_name = f"woodpecker-{pkg}"
+    files_dir = os.path.join(REPO_ROOT, "dev-util", pkg_name, "files")
+    os.makedirs(files_dir, exist_ok=True)
+    
+    deb_url = f"https://github.com{ver}/{pkg_name}_linux_amd64.deb"
+    deb_path = f"{pkg_name}.deb"
+    
+    # 1. Download
+    r = requests.get(deb_url)
+    with open(deb_path, "wb") as f: f.write(r.content)
+    
+    # 2. Extract data.tar.xz from .deb (ar is standard on Gentoo via binutils)
+    subprocess.run(["ar", "x", deb_path], check=True)
+    
+    # 3. Extract specific files from data.tar.xz
+    with tarfile.open("data.tar.xz") as tar:
+        for member in tar.getmembers():
+            # Rob systemd units and environment examples
+            if ".service" in member.name or ".env" in member.name:
+                member.name = os.path.basename(member.name) # Flatten path
+                tar.extract(member, path=files_dir)
+                print(f"Robbed: {member.name} -> {files_dir}")
+
+    # Cleanup temp extraction files
+    for f in [deb_path, "control.tar.gz", "data.tar.xz", "debian-binary"]:
+        if os.path.exists(f): os.remove(f)
+
+if __name__ == "__main__":
+    for p in PKGS:
+        extract_upstream_configs(p, VERSION)
