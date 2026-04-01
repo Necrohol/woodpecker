@@ -1,0 +1,36 @@
+name: Woodpecker Sync
+on:
+  schedule: [{cron: "0 0 * * *"}]
+  workflow_dispatch:
+
+jobs:
+  update-overlay:
+    runs-on: ubuntu-latest
+    container: gentoo/stage3:amd64
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Portage
+        run: |
+          emerge --sync --quiet
+          emerge dev-util/pkgdev app-portage/gentoolkit dev-vcs/git
+          
+      - name: Run Generator
+        run: python3 scripts/update_overlay.py
+
+      - name: Manifest
+        run: pkgdev manifest
+
+      - name: Scan & Check
+        uses: pkgcore/pkgcheck-action@v1
+        with:
+          args: --net
+
+      - name: Commit & Push
+        env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          pkgdev commit -a -m "woodpecker: automated version bump" || echo "No changes"
+          git push
