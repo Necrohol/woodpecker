@@ -26,6 +26,34 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/update_overlay.py # Ensure filename matches
+              - name: Setup Tools
+        run: |
+          getbinpkg=y emerge --sync --quiet
+          getbinpkg=y emerge -uDN --quiet \
+            dev-util/pkgdev \
+            dev-vcs/git \
+            net-misc/curl \
+            dev-python/requests
+
+      - name: Register Overlay for Portage
+        run: |
+          mkdir -p /etc/portage/repos.conf
+          # $(pwd) points to the GitHub workspace where the repo is checked out
+          echo -e "[woodpecker]\nlocation = $(pwd)\nmasters = gentoo\nauto-sync = no" > /etc/portage/repos.conf/woodpecker.conf
+
+      - name: Run Update Script
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/update_overlay.py 
+
+      - name: Manifest & Commit
+        run: |
+          git config --global --add safe.directory $(pwd)
+          # pkgdev now knows 'woodpecker' is a local repo thanks to the step above
+          pkgdev manifest
+          pkgdev commit -a -m "woodpecker: automated version bump" || echo "No changes"
+          git push
+
         
       - name: Manifest & Commit
         run: |
